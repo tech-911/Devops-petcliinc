@@ -1,7 +1,7 @@
 # =========================
 # Build Stage
 # =========================
-FROM eclipse-temurin:25-jdk-alpine AS builder
+FROM eclipse-temurin:17-jdk-alpine AS builder
 
 # Set work directory
 WORKDIR /app
@@ -20,7 +20,7 @@ RUN ./mvnw clean package
 # =========================
 # Runtime Stage
 # =========================
-FROM eclipse-temurin:25-jdk-alpine
+FROM eclipse-temurin:17-jdk-alpine
 
 WORKDIR /app
 
