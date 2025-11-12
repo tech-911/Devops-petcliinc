@@ -1,6 +1,10 @@
 pipeline {
-    // 1. Agent: Run the pipeline on the Jenkins controller (for this lab)
     agent any
+    
+    // NEW: Tool directive added here to load Maven 'M3' onto the PATH
+    tools {
+        maven 'M3' 
+    }
 
     environment {
         // Define Docker Image variables using your usernames
