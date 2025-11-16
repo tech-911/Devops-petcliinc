@@ -69,18 +69,16 @@ spec:
                             usernameVariable: 'DOCKER_USER',
                             passwordVariable: 'DOCKER_PASS'
                         )]) {
-                            // 👇 FIX: Use a secure, whitelisted way to encode Base64.
-                            // We use Java/Groovy code that should be whitelisted (or requires a quick whitelisting) 
-                            // as it is the most reliable way to get the string, and is generally preferred 
-                            // over shell gymnastics.
-                            def authString = "echo -n ${env.DOCKER_USER}:${env.DOCKER_PASS}".execute().text.encodeBase64().toString()
+                            // This Groovy code will fail the first time, registering the method for approval.
+                            def authString = "${env.DOCKER_USER}:${env.DOCKER_PASS}".getBytes('UTF-8').encodeBase64().toString()
                             def dockerConfig = '{"auths":{"https://index.docker.io/v1/":{"auth":"' + authString + '"}}}'
 
                             sh """
-                                # 1. Write the pre-encoded Docker config.json directly to Kaniko's expected path
+                                # WARNING: A secret is used via Groovy interpolation (safe here but Jenkins warns)
+                                # Write the pre-encoded Docker config.json directly to Kaniko's expected path
                                 printf '%s' '${dockerConfig}' > /kaniko/.docker/config.json
                                 
-                                # 2. Execute Kaniko
+                                # Execute Kaniko
                                 /kaniko/executor \\
                                   --context=/home/jenkins/agent/workspace/spring-petclinic-pipeline \\
                                   --dockerfile=Dockerfile \\
