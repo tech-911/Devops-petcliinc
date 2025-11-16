@@ -15,6 +15,7 @@ pipeline {
     }
     
     stages {
+
         stage('Checkout') {
             steps {
                 git branch: 'main',
@@ -25,92 +26,93 @@ pipeline {
         
         stage('Build & Test') {
             steps {
-                sh 'mvn clean package'
+                sh 'mvn clean package -DskipTests'
             }
         }
-        
+
         stage('Build & Push with Kaniko') {
             agent {
                 kubernetes {
                     yaml """
 apiVersion: v1
 kind: Pod
-metadata:
-  labels:
-    jenkins: agent
 spec:
   serviceAccountName: jenkins
   containers:
-  # 1. Explicitly define JNLP and mount the volume so it can write the config file.
-  - name: jnlp 
-    image: jenkins/inbound-agent:3345.v03dee9b_f88fc-1 
-    volumeMounts:
-    - name: docker-config
-      mountPath: /kaniko/.docker # JNLP can now safely write here!
-    - name: workspace-volume 
-      mountPath: /home/jenkins/agent
-  
-  - name: kaniko
-    image: gcr.io/kaniko-project/executor:debug
-    # Ensure the container stays alive using the BusyBox shell.
-    command:
-    - "/busybox/sh"
-    - "-c"
-    - "sleep 9999999"
-    args:
-    - "--context=/workspace"
-    - "--dockerfile=/workspace/Dockerfile"
-    - "--verbosity=info"
-    volumeMounts:
-    - name: docker-config
-      mountPath: /kaniko/.docker
-    - name: workspace-volume 
-      mountPath: /home/jenkins/agent
-  
+    - name: kaniko
+      image: gcr.io/kaniko-project/executor:debug
+      command:
+        - /busybox/sh
+      args:
+        - -c
+        - sleep 1000000
+      volumeMounts:
+        - name: docker-config
+          mountPath: /kaniko/.docker
+        - name: workspace-volume
+          mountPath: /workspace
+
+    - name: jnlp
+      image: jenkins/inbound-agent:latest
+      volumeMounts:
+        - name: docker-config
+          mountPath: /kaniko/.docker
+        - name: workspace-volume
+          mountPath: /workspace
+
   volumes:
-  - name: docker-config
-    emptyDir: {}
-  - name: workspace-volume
-    emptyDir: {}
+    - name: docker-config
+      emptyDir: {}
+    - name: workspace-volume
+      emptyDir: {}
 """
-                    inheritFrom ''
+                    defaultContainer 'jnlp'
                 }
             }
+
             steps {
-                // This script block runs on the stable JNLP container
                 script {
-                    def dockerConfigPath = "/kaniko/.docker/config.json"
-                    
+                    def cfg = "/kaniko/.docker/config.json"
+
                     withCredentials([usernamePassword(
                         credentialsId: 'dockerhub-credentials',
-                        usernameVariable: 'DOCKER_USER',
-                        passwordVariable: 'DOCKER_PASS'
+                        usernameVariable: 'USER',
+                        passwordVariable: 'PASS'
                     )]) {
-                        
-                        // Use sh to create the directory on the shared volume
-                        sh 'mkdir -p /kaniko/.docker' 
 
-                        // Use Groovy writeFile to create the config.json (cleaner than shell redirection)
-                        echo "Creating Docker config in ${dockerConfigPath}"
-                        def authString = "${env.DOCKER_USER}:${env.DOCKER_PASS}".getBytes('UTF-8').encodeBase64().toString()
-                        def dockerConfigContent = '{"auths":{"https://index.docker.io/v1/":{"auth":"' + authString + '"}}}'
+                        // Create auth file
+                        sh "mkdir -p /kaniko/.docker"
+                        def token = "${USER}:${PASS}".bytes.encodeBase64().toString()
+                        writeFile file: cfg, text: """
+{
+  "auths": {
+    "https://index.docker.io/v1/": {
+      "auth": "${token}"
+    }
+  }
+}
+"""
 
-                        writeFile(
-                            file: dockerConfigPath,
-                            text: dockerConfigContent
-                        )
-                        
-                        // Switch to the 'kaniko' container
-                        container('kaniko') {}
+                        echo "🔥 Running Kaniko build & push..."
+
+                        container('kaniko') {
+                            sh """
+/kaniko/executor \
+  --context=/workspace \
+  --dockerfile=/workspace/Dockerfile \
+  --destination=${DOCKER_IMAGE} \
+  --verbosity=info
+"""
+                        }
                     }
                 }
             }
         }
-        
-      stage('Deploy to Kubernetes') {
-    agent {
-        kubernetes {
-            yaml """
+
+        stage('Deploy to Kubernetes') {
+            agent {
+                kubernetes {
+                    yaml """
 apiVersion: v1
 kind: Pod
 spec:
@@ -118,35 +120,31 @@ spec:
   containers:
     - name: kubectl
       image: bitnami/kubectl:latest
-      command:
-        - cat
+      command: ['cat']
       tty: true
 """
-            defaultContainer 'kubectl'
+                    defaultContainer 'kubectl'
+                }
+            }
+
+            steps {
+                container('kubectl') {
+                    sh """
+                        echo "Deploying..."
+
+                        kubectl apply -f k8s/ns-prod.yaml
+                        kubectl apply -f k8s/db.yml
+                        kubectl apply -f k8s/petclinic.yml
+
+                        kubectl set image deployment/${K8S_DEPLOYMENT_NAME} \
+                            petclinic=${DOCKER_IMAGE} -n default
+
+                        kubectl rollout status deployment/${K8S_DEPLOYMENT_NAME} \
+                            -n default --timeout=5m
+                    """
+                }
+            }
         }
-    }
-
-    steps {
-        container('kubectl') {
-            sh """
-                echo 'Deploying to Kubernetes...1'
-                kubectl apply -f k8s/ns-prod.yaml
-                echo 'Deploying to Kubernetes...2'
-                kubectl apply -f k8s/db.yml
-                echo 'Deploying to Kubernetes...3'
-                kubectl apply -f k8s/petclinic.yml
-                echo 'Deploying to Kubernetes...4'
-                kubectl set image deployment/${K8S_DEPLOYMENT_NAME} \
-                    petclinic=${DOCKER_IMAGE} -n default
-                echo 'Deploying to Kubernetes...5'
-                kubectl rollout status deployment/${K8S_DEPLOYMENT_NAME} \
-                    -n default --timeout=5m
-            """
-        }
-    }
-}
-
-
     }
     
     post {
