@@ -57,6 +57,11 @@ spec:
     - "/busybox/sh"
     - "-c"
     - "sleep 9999999"
+    args:
+    - "--context=/workspace"
+    - "--dockerfile=/workspace/Dockerfile"
+    - "--destination=$(DOCKER_HUB_USER)/$(IMAGE_NAME):latest"
+    - "--verbosity=info"
     volumeMounts:
     - name: docker-config
       mountPath: /kaniko/.docker
@@ -97,23 +102,7 @@ spec:
                         )
                         
                         // Switch to the 'kaniko' container
-                        container('kaniko') {
-                            // CRITICAL FIX 3: Explicitly call /busybox/sh to bypass the Durable Task failure.
-                            // We pass the entire Kaniko command as a single script string to the explicit shell.
-                            sh """
-                                /busybox/sh -c "
-                                    set -e
-                                    echo 'Starting Kaniko build in kaniko container...'
-                                    /kaniko/executor \\
-                                      --context=${WORKSPACE} \\
-                                      --dockerfile=${WORKSPACE}/Dockerfile \\
-                                      --destination=${DOCKER_IMAGE} \\
-                                      --destination=${DOCKER_HUB_USER}/${IMAGE_NAME}:latest \\
-                                      --verbosity=info
-                                    echo 'Kaniko build complete.'
-                                "
-                            """
-                        }
+                        container('kaniko') {}
                     }
                 }
             }
