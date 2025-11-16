@@ -1,79 +1,101 @@
 pipeline {
-    agent any // Initial agent, used for Checkout, Build & Test
+    agent any
     
     tools {
-        jdk 'JDK-17' 
-        maven 'M3' 
+        jdk 'JDK-17'
+        maven 'M3'
     }
-
+    
     environment {
         DOCKER_HUB_USER = 'bolatunj'
         IMAGE_NAME = "devops-petcliinc"
-        IMAGE_TAG = "${env.BUILD_NUMBER}" 
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
         DOCKER_IMAGE = "${DOCKER_HUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
         K8S_DEPLOYMENT_NAME = "petclinic-deployment"
     }
-
+    
     stages {
         stage('Checkout') {
-            // This runs successfully on the initial 'agent any'
             steps {
-                git branch: 'main', credentialsId: 'github-credentials', url: 'https://github.com/tech-911/Devops-petcliinc.git'
+                git branch: 'main', 
+                    credentialsId: 'github-credentials', 
+                    url: 'https://github.com/tech-911/Devops-petcliinc.git'
             }
         }
-
+        
         stage('Build & Test') {
-            // This runs successfully on the initial 'agent any'
             steps {
-                sh 'mvn clean install -DskipTests' 
-                sh 'mvn test' 
+                sh 'mvn clean package'
             }
         }
-
-        stage('Build & Push Docker Image (Kaniko)') {
-            // Jenkins will spin up a new Kaniko Pod using the label defined in Step 2
-            agent { label 'kaniko-builder' } 
+        
+        stage('Build & Push with Kaniko') {
+            agent {
+                kubernetes {
+                    yaml """
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    jenkins: agent
+spec:
+  serviceAccountName: jenkins
+  containers:
+  - name: kaniko
+    image: gcr.io/kaniko-project/executor:debug
+    command:
+    - /busybox/cat
+    tty: true
+    volumeMounts:
+    - name: docker-config
+      mountPath: /kaniko/.docker
+  volumes:
+  - name: docker-config
+    emptyDir: {}
+"""
+                }
+            }
             steps {
-                script {
-                    // 1. Get Docker Hub credentials securely
-                    withCredentials([usernamePassword(
-                        credentialsId: 'dockerhub-credentials', 
-                        passwordVariable: 'DOCKER_PASSWORD', 
-                        usernameVariable: 'DOCKER_USERNAME')]) {
-                        
-                        // 2. Create the Docker Hub configuration file required by Kaniko
-                        // This file is mounted directly into the Kaniko container's filesystem
-                        sh """
-                        mkdir -p /kaniko/.docker
-                        cat > /kaniko/.docker/config.json <<EOF
-                        {
-                            "auths": {
-                                "https://index.docker.io/v1/": {
-                                    "username": "\$DOCKER_USERNAME",
-                                    "password": "\$DOCKER_PASSWORD"
-                                }
-                            }
+                container('kaniko') {
+                    script {
+                        withCredentials([usernamePassword(
+                            credentialsId: 'dockerhub-credentials',
+                            usernameVariable: 'DOCKER_USER',
+                            passwordVariable: 'DOCKER_PASS'
+                        )]) {
+                            sh '''
+                                echo "{\\"auths\\":{\\"https://index.docker.io/v1/\\":{\\"auth\\":\\"$(echo -n $DOCKER_USER:$DOCKER_PASS | base64)\\"}}}" > /kaniko/.docker/config.json
+                                /kaniko/executor \
+                                  --context=/home/jenkins/agent/workspace/spring-petclinic-pipeline \
+                                  --dockerfile=Dockerfile \
+                                  --destination=''' + env.DOCKER_IMAGE + ''' \
+                                  --destination=''' + env.DOCKER_HUB_USER + '/' + env.IMAGE_NAME + ''':latest
+                            '''
                         }
-                        EOF
-                        """
-                        
-                        // 3. Run Kaniko: Build image using Dockerfile and push immediately to both tags
-                        sh "/kaniko/executor --context=\$(pwd) --dockerfile=\$(pwd)/Dockerfile --destination=${DOCKER_IMAGE} --destination=${DOCKER_HUB_USER}/${IMAGE_NAME}:latest"
                     }
                 }
             }
         }
         
-        // This stage reverts back to the 'agent any' pod (or uses the existing one)
         stage('Deploy to Kubernetes') {
             agent any
             steps {
-                // Ensure the deployment file is updated with the new image tag
-                sh "sed -i 's|bolatunj/devops-petcliinc:latest|${DOCKER_IMAGE}|g' k8s/deployment.yml"
-                sh "kubectl apply -f k8s/service.yml"
-                sh "kubectl apply -f k8s/deployment.yml"
-                sh "kubectl rollout status deployment/${K8S_DEPLOYMENT_NAME} --namespace default"
+                sh """
+                    kubectl apply -f k8s/deployment.yml
+                    kubectl apply -f k8s/service.yml
+                    kubectl set image deployment/${K8S_DEPLOYMENT_NAME} petclinic=${DOCKER_IMAGE} -n default
+                    kubectl rollout status deployment/${K8S_DEPLOYMENT_NAME} -n default --timeout=5m
+                """
             }
+        }
+    }
+    
+    post {
+        success {
+            echo '✅ Pipeline completed successfully!'
+        }
+        failure {
+            echo '❌ Pipeline failed!'
         }
     }
 }
