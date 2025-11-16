@@ -35,61 +35,49 @@ pipeline {
                     yaml """
 apiVersion: v1
 kind: Pod
-metadata:
-  labels:
-    jenkins: agent
 spec:
   serviceAccountName: jenkins
   containers:
   - name: kaniko
     image: gcr.io/kaniko-project/executor:debug
-    # CRITICAL FIX: This command keeps the Kaniko sidecar container alive
-    # until the Jenkins agent is ready to run the build command inside it.
     command:
-    - "/busybox/sh"
-    - "-c"
-    - "sleep 9999999" 
+    - /busybox/cat
+    tty: true
     volumeMounts:
     - name: docker-config
       mountPath: /kaniko/.docker
-    - name: workspace-volume
-      mountPath: /home/jenkins/agent
   volumes:
   - name: docker-config
     emptyDir: {}
 """
-                    inheritFrom '' // Ensures JNLP remains the default container for utility tasks
                 }
             }
             steps {
-                script {
-                    def dockerConfigPath = "/home/jenkins/agent/workspace/spring-petclinic-pipeline/docker-config.json"
-
+                container('kaniko') {
                     withCredentials([usernamePassword(
                         credentialsId: 'dockerhub-credentials',
                         usernameVariable: 'DOCKER_USER',
                         passwordVariable: 'DOCKER_PASS'
                     )]) {
-                        def authString = "${env.DOCKER_USER}:${env.DOCKER_PASS}".getBytes('UTF-8').encodeBase64().toString()
-                        def dockerConfigContent = '{"auths":{"https://index.docker.io/v1/":{"auth":"' + authString + '"}}}'
-
-                        // 1. Write the config file using the stable JNLP container
-                        writeFile(
-                            file: dockerConfigPath,
-                            text: dockerConfigContent
-                        )
-                        
-                        // 2. Use the 'kaniko' container to run the executor command
-                        container('kaniko') {
-                            sh """
-                                /kaniko/executor \\
-                                  --context=/home/jenkins/agent/workspace/spring-petclinic-pipeline \\
-                                  --dockerfile=Dockerfile \\
-                                  --destination=${DOCKER_IMAGE} \\
-                                  --destination=${DOCKER_HUB_USER}/${IMAGE_NAME}:latest \\
-                                  --docker-config=${dockerConfigPath}  
-                            """
-                        }
+                        sh '''#!/busybox/sh
+                            echo "Creating Docker config..."
+                            AUTH=$(echo -n ${DOCKER_USER}:${DOCKER_PASS} | base64)
+                            cat > /kaniko/.docker/config.json <<EOF
+{
+  "auths": {
+    "https://index.docker.io/v1/": {
+      "auth": "${AUTH}"
+    }
+  }
+}
+EOF
+                            echo "Building and pushing image..."
+                            /kaniko/executor \
+                              --context=${WORKSPACE} \
+                              --dockerfile=${WORKSPACE}/Dockerfile \
+                              --destination=${DOCKER_HUB_USER}/${IMAGE_NAME}:${IMAGE_TAG} \
+                              --destination=${DOCKER_HUB_USER}/${IMAGE_NAME}:latest
+                        '''
                     }
                 }
             }
@@ -105,6 +93,15 @@ spec:
                     kubectl rollout status deployment/${K8S_DEPLOYMENT_NAME} -n default --timeout=5m
                 """
             }
+        }
+    }
+    
+    post {
+        success {
+            echo '✅ Pipeline completed successfully!'
+        }
+        failure {
+            echo '❌ Pipeline failed!'
         }
     }
 }
