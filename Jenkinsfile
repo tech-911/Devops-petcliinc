@@ -41,59 +41,79 @@ metadata:
 spec:
   serviceAccountName: jenkins
   containers:
+  # CRITICAL FIX: Define JNLP container explicitly to give it the volume mount
+  - name: jnlp 
+    image: jenkins/inbound-agent:3345.v03dee9b_f88fc-1 # Standard JNLP image
+    volumeMounts:
+    - name: docker-config
+      mountPath: /kaniko/.docker # JNLP can now safely write here!
+    - name: workspace-volume 
+      mountPath: /home/jenkins/agent # Default workspace
+  
   - name: kaniko
     image: gcr.io/kaniko-project/executor:debug
-    # FIX 1: Ensure the container stays alive using a known shell (BusyBox)
     command:
     - "/busybox/sh"
     - "-c"
     - "sleep 9999999"
     volumeMounts:
-    # This volume mount path is shared by all containers in the Pod
     - name: docker-config
       mountPath: /kaniko/.docker
-    # This mount allows Kaniko to see the source code
     - name: workspace-volume 
       mountPath: /home/jenkins/agent
+  
   volumes:
-    # Define the shared volume for the Docker config
   - name: docker-config
+    emptyDir: {}
+  - name: workspace-volume
     emptyDir: {}
 """
                     inheritFrom ''
                 }
             }
             steps {
+                // This script block runs on the JNLP container (default agent)
                 script {
-                    // This entire block runs in the stable JNLP container (the default agent)
                     withCredentials([usernamePassword(
                         credentialsId: 'dockerhub-credentials',
                         usernameVariable: 'DOCKER_USER',
                         passwordVariable: 'DOCKER_PASS'
                     )]) {
                         
-                        // 1. Write the config file directly to the shared volume path.
-                        // The JNLP agent is stable and uses 'writeFile' (Groovy), avoiding the shell issue.
-                        echo "Writing Docker config to shared volume path: /kaniko/.docker/config.json"
-                        def authString = "${env.DOCKER_USER}:${env.DOCKER_PASS}".getBytes('UTF-8').encodeBase64().toString()
-                        def dockerConfigContent = '{"auths":{"https://index.docker.io/v1/":{"auth":"' + authString + '"}}}'
-
-                        sh "mkdir -p /kaniko/.docker" // Ensure the folder exists on the shared volume
-                        writeFile(
-                            file: "/kaniko/.docker/config.json",
-                            text: dockerConfigContent
-                        )
+                        // This mkdir command will now operate on the mounted emptyDir volume
+                        sh 'mkdir -p /kaniko/.docker' 
                         
-                        // 2. Switch to the minimal 'kaniko' container to run the executor.
-                        // We are running the shortest possible command here to minimize the chance of the durable task failing.
+                        echo "Creating Docker config in /kaniko/.docker/config.json"
+                        
+                        // Create the config.json file with credentials
+                        sh '''
+                            set -e
+                            
+                            AUTH_STRING=$(echo -n $DOCKER_USER:$DOCKER_PASS | base64)
+                            
+                            cat > /kaniko/.docker/config.json << EOFCONFIG
+{
+  "auths": {
+    "https://index.docker.io/v1/": {
+      "auth": "${AUTH_STRING}"
+    }
+  }
+}
+EOFCONFIG
+                            echo "Config created."
+                        '''
+
+                        // Switch to the 'kaniko' container to run the executor.
                         container('kaniko') {
                             sh """
+                                echo "Starting Kaniko build in kaniko container..."
                                 /kaniko/executor \\
                                   --context=${WORKSPACE} \\
                                   --dockerfile=${WORKSPACE}/Dockerfile \\
                                   --destination=${DOCKER_IMAGE} \\
                                   --destination=${DOCKER_HUB_USER}/${IMAGE_NAME}:latest \\
                                   --verbosity=info
+                                echo "Kaniko build complete."
                             """
                         }
                     }
