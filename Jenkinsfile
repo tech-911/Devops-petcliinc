@@ -40,6 +40,11 @@ spec:
   
   - name: kaniko
     image: gcr.io/kaniko-project/executor:debug
+    args:
+    - "--context=/workspace"
+    - "--dockerfile=/workspace/Dockerfile"
+    - "--destination=$(DOCKER_HUB_USER)/$(IMAGE_NAME):latest"
+    - "--verbosity=info"
     command:
     - "/busybox/sh"
     - "-c"
