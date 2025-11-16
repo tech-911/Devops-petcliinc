@@ -43,11 +43,8 @@ spec:
   containers:
   - name: kaniko
     image: gcr.io/kaniko-project/executor:debug
-    # Ensure the container stays alive
-    command:
-    - /busybox/sh
-    - -c
-    - 'sleep 9999999'
+    # We do NOT need the command/sleep hack anymore. Kaniko is just a tool here.
+    # The default entrypoint is harmless.
     volumeMounts:
     - name: docker-config
       mountPath: /kaniko/.docker
@@ -57,33 +54,32 @@ spec:
   - name: docker-config
     emptyDir: {}
 """
-                    defaultContainer 'kaniko'
+                    // *** REMOVED defaultContainer 'kaniko' ***
                     inheritFrom ''
                 }
             }
             steps {
-                container('kaniko') {
-                    script {
-                        // Define the new, SAFE path for the Docker config file inside the workspace
-                        def dockerConfigPath = "/home/jenkins/agent/workspace/spring-petclinic-pipeline/docker-config.json"
+                // The 'jnlp' container is now the default runner for this stage
+                // Kaniko is available, but the shell command is run by JNLP.
+                script {
+                    def dockerConfigPath = "/home/jenkins/agent/workspace/spring-petclinic-pipeline/docker-config.json"
 
-                        withCredentials([usernamePassword(
-                            credentialsId: 'dockerhub-credentials',
-                            usernameVariable: 'DOCKER_USER',
-                            passwordVariable: 'DOCKER_PASS'
-                        )]) {
-                            // 1. Prepare the encoded credentials (same as before)
-                            def authString = "${env.DOCKER_USER}:${env.DOCKER_PASS}".getBytes('UTF-8').encodeBase64().toString()
-                            def dockerConfigContent = '{"auths":{"https://index.docker.io/v1/":{"auth":"' + authString + '"}}}'
+                    withCredentials([usernamePassword(
+                        credentialsId: 'dockerhub-credentials',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )]) {
+                        def authString = "${env.DOCKER_USER}:${env.DOCKER_PASS}".getBytes('UTF-8').encodeBase64().toString()
+                        def dockerConfigContent = '{"auths":{"https://index.docker.io/v1/":{"auth":"' + authString + '"}}}'
 
-                            // 2. Safely write the config file to the workspace using writeFile
-                            // Jenkins has full permission to write to its own workspace
-                            writeFile(
-                                file: dockerConfigPath,
-                                text: dockerConfigContent
-                            )
-                            
-                            // 3. Execute Kaniko, using the --docker-config flag to point to the file in the workspace
+                        // 1. Write the config file using the stable JNLP container
+                        writeFile(
+                            file: dockerConfigPath,
+                            text: dockerConfigContent
+                        )
+                        
+                        // 2. Use the 'kaniko' container to run the executor command
+                        container('kaniko') {
                             sh """
                                 /kaniko/executor \\
                                   --context=/home/jenkins/agent/workspace/spring-petclinic-pipeline \\
