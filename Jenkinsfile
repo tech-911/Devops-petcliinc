@@ -41,8 +41,9 @@ spec:
   - name: kaniko
     image: gcr.io/kaniko-project/executor:debug
     command:
-    - /busybox/cat
-    tty: true
+    - sleep
+    args:
+    - 99d
     volumeMounts:
     - name: docker-config
       mountPath: /kaniko/.docker
@@ -59,24 +60,26 @@ spec:
                         usernameVariable: 'DOCKER_USER',
                         passwordVariable: 'DOCKER_PASS'
                     )]) {
-                        sh '''#!/busybox/sh
+                        sh '''
+                            set -e
                             echo "Creating Docker config..."
-                            AUTH=$(echo -n ${DOCKER_USER}:${DOCKER_PASS} | base64)
-                            cat > /kaniko/.docker/config.json <<EOF
+                            mkdir -p /kaniko/.docker
+                            cat > /kaniko/.docker/config.json << 'EOFCONFIG'
 {
   "auths": {
     "https://index.docker.io/v1/": {
-      "auth": "${AUTH}"
+      "auth": "'$(echo -n $DOCKER_USER:$DOCKER_PASS | base64)'"
     }
   }
 }
-EOF
-                            echo "Building and pushing image..."
+EOFCONFIG
+                            echo "Config created. Starting build..."
                             /kaniko/executor \
                               --context=${WORKSPACE} \
                               --dockerfile=${WORKSPACE}/Dockerfile \
                               --destination=${DOCKER_HUB_USER}/${IMAGE_NAME}:${IMAGE_TAG} \
-                              --destination=${DOCKER_HUB_USER}/${IMAGE_NAME}:latest
+                              --destination=${DOCKER_HUB_USER}/${IMAGE_NAME}:latest \
+                              --verbosity=info
                         '''
                     }
                 }
