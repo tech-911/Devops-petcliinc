@@ -53,7 +53,6 @@ spec:
       mountPath: /kaniko/.docker
     - name: workspace-volume
       mountPath: /home/jenkins/agent
-  # We use the implicit EmptyDir for workspace, so only define docker-config
   volumes:
   - name: docker-config
     emptyDir: {}
@@ -70,12 +69,13 @@ spec:
                             usernameVariable: 'DOCKER_USER',
                             passwordVariable: 'DOCKER_PASS'
                         )]) {
-                            // Convert credentials to Base64 in Groovy, then use simple echo.
-                            // The Kaniko executor requires the full, correctly formatted config.json.
-                            // We use `printf` since it's more reliable than `echo` in BusyBox.
+                            // Groovy calculates the Base64 string for the Docker config
+                            def authString = "${env.DOCKER_USER}:${env.DOCKER_PASS}".bytes.encodeBase64().toString()
+                            def dockerConfig = '{"auths":{"https://index.docker.io/v1/":{"auth":"' + authString + '"}}}'
+                            
                             sh """
-                                DOCKER_AUTH=\$(echo -n "${DOCKER_USER}:${DOCKER_PASS}" | base64 -w 0)
-                                printf '{\\"auths\\":{\\"https://index.docker.io/v1/\\":{\\"auth\\":\\"%s\\"}}}' "\${DOCKER_AUTH}" > /kaniko/.docker/config.json
+                                # Write the pre-encoded Docker config.json directly
+                                printf '%s' '${dockerConfig}' > /kaniko/.docker/config.json
                                 
                                 # Execute Kaniko
                                 /kaniko/executor \\
