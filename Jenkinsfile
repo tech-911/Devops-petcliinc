@@ -129,13 +129,16 @@ spec:
     steps {
         container('kubectl') {
             sh """
+                echo 'Deploying to Kubernetes...1'
                 kubectl apply -f k8s/ns-prod.yaml
+                echo 'Deploying to Kubernetes...2'
                 kubectl apply -f k8s/db.yml
+                echo 'Deploying to Kubernetes...3'
                 kubectl apply -f k8s/petclinic.yml
-
+                echo 'Deploying to Kubernetes...4'
                 kubectl set image deployment/${K8S_DEPLOYMENT_NAME} \
                     petclinic=${DOCKER_IMAGE} -n default
-
+                echo 'Deploying to Kubernetes...5'
                 kubectl rollout status deployment/${K8S_DEPLOYMENT_NAME} \
                     -n default --timeout=5m
             """
