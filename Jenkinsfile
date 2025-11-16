@@ -39,14 +39,11 @@ metadata:
   labels:
     jenkins: agent
 spec:
-  # IMPORTANT: Add nodeSelector to force scheduling to the PV node
-  nodeSelector:
-    kubernetes.io/hostname: k8s-worker1 
   serviceAccountName: jenkins
   containers:
   - name: kaniko
     image: gcr.io/kaniko-project/executor:debug
-    # FIX: Use /busybox/sh and sleep to keep the container alive for Jenkins
+    # FIX: Use shell keep-alive command
     command:
     - /busybox/sh
     - -c
@@ -54,18 +51,12 @@ spec:
     volumeMounts:
     - name: docker-config
       mountPath: /kaniko/.docker
-    # If using local-storage PV, you need to mount it here.
-    # If the workspace-volume is EmptyDir (as it is below), this is okay.
-    # If you were using kaniko-pvc, you'd also need the workspace-volume mount:
-    # - name: workspace-volume
-    #   mountPath: /home/jenkins/agent
+    - name: workspace-volume
+      mountPath: /home/jenkins/agent
+  # We use the implicit EmptyDir for workspace, so only define docker-config
   volumes:
   - name: docker-config
     emptyDir: {}
-  # If you were using kaniko-pvc, you'd add it here:
-  # - name: workspace-volume
-  #   persistentVolumeClaim:
-  #     claimName: kaniko-pvc
 """
                     defaultContainer 'kaniko'
                     inheritFrom ''
@@ -79,14 +70,20 @@ spec:
                             usernameVariable: 'DOCKER_USER',
                             passwordVariable: 'DOCKER_PASS'
                         )]) {
-                            sh '''
-                                echo "{\\"auths\\":{\\"https://index.docker.io/v1/\\":{\\"auth\\":\\"$(echo -n $DOCKER_USER:$DOCKER_PASS | base64)\\"}}}" > /kaniko/.docker/config.json
+                            // Convert credentials to Base64 in Groovy, then use simple echo.
+                            // The Kaniko executor requires the full, correctly formatted config.json.
+                            // We use `printf` since it's more reliable than `echo` in BusyBox.
+                            sh """
+                                DOCKER_AUTH=\$(echo -n "${DOCKER_USER}:${DOCKER_PASS}" | base64 -w 0)
+                                printf '{\\"auths\\":{\\"https://index.docker.io/v1/\\":{\\"auth\\":\\"%s\\"}}}' "\${DOCKER_AUTH}" > /kaniko/.docker/config.json
+                                
+                                # Execute Kaniko
                                 /kaniko/executor \\
                                   --context=/home/jenkins/agent/workspace/spring-petclinic-pipeline \\
                                   --dockerfile=Dockerfile \\
-                                  --destination=''' + env.DOCKER_IMAGE + ''' \\
-                                  --destination=''' + env.DOCKER_HUB_USER + '/' + env.IMAGE_NAME + ''':latest
-                            '''
+                                  --destination=${DOCKER_IMAGE} \\
+                                  --destination=${DOCKER_HUB_USER}/${IMAGE_NAME}:latest
+                            """
                         }
                     }
                 }
