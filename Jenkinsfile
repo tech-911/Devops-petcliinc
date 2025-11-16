@@ -64,28 +64,33 @@ spec:
             steps {
                 container('kaniko') {
                     script {
+                        // Define the new, SAFE path for the Docker config file inside the workspace
+                        def dockerConfigPath = "/home/jenkins/agent/workspace/spring-petclinic-pipeline/docker-config.json"
+
                         withCredentials([usernamePassword(
                             credentialsId: 'dockerhub-credentials',
                             usernameVariable: 'DOCKER_USER',
                             passwordVariable: 'DOCKER_PASS'
                         )]) {
-                            // 1. Prepare the encoded credentials using approved Groovy methods.
+                            // 1. Prepare the encoded credentials (same as before)
                             def authString = "${env.DOCKER_USER}:${env.DOCKER_PASS}".getBytes('UTF-8').encodeBase64().toString()
-                            def dockerConfig = '{"auths":{"https://index.docker.io/v1/":{"auth":"' + authString + '"}}}'
+                            def dockerConfigContent = '{"auths":{"https://index.docker.io/v1/":{"auth":"' + authString + '"}}}'
 
-                            // 2. Safely write the config file using the Jenkins native 'writeFile' step.
+                            // 2. Safely write the config file to the workspace using writeFile
+                            // Jenkins has full permission to write to its own workspace
                             writeFile(
-                                file: '/kaniko/.docker/config.json',
-                                text: dockerConfig
+                                file: dockerConfigPath,
+                                text: dockerConfigContent
                             )
                             
-                            // 3. Execute Kaniko with a simple shell command.
+                            // 3. Execute Kaniko, using the --docker-config flag to point to the file in the workspace
                             sh """
                                 /kaniko/executor \\
                                   --context=/home/jenkins/agent/workspace/spring-petclinic-pipeline \\
                                   --dockerfile=Dockerfile \\
                                   --destination=${DOCKER_IMAGE} \\
-                                  --destination=${DOCKER_HUB_USER}/${IMAGE_NAME}:latest
+                                  --destination=${DOCKER_HUB_USER}/${IMAGE_NAME}:latest \\
+                                  --docker-config=${dockerConfigPath}  
                             """
                         }
                     }
