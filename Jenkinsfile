@@ -15,6 +15,10 @@ pipeline {
   }
 
   stages {
+
+    /* ================================
+       CHECKOUT CODE
+       ================================ */
     stage('Checkout') {
       steps {
         git branch: 'main',
@@ -23,9 +27,11 @@ pipeline {
       }
     }
 
+    /* ================================
+       MAVEN BUILD
+       ================================ */
     stage('Build & Test') {
       steps {
-        // Build the jar on a full agent (has Maven because of tools{})
         sh 'mvn -B clean package -DskipTests=false'
       }
       post {
@@ -33,11 +39,12 @@ pipeline {
       }
     }
 
-    stage('Build & Push with Kaniko') {
+    /* ================================
+       FIXED KANIKO STAGE
+       ================================ */
+    stage('Build & Push Image (Kaniko)') {
       agent {
         kubernetes {
-          // The YAML below is a minimal Kaniko pod. IMPORTANT: this **does not** inherit
-          // Maven/Git tool config from the parent, so Jenkins won't try to install tools here.
           yaml """
 apiVersion: v1
 kind: Pod
@@ -50,29 +57,26 @@ spec:
   - name: kaniko
     image: gcr.io/kaniko-project/executor:debug
     command:
-    - /busybox/cat
+      - /busybox/sleep
+      - "999999"
     tty: true
     volumeMounts:
-    - name: docker-config
-      mountPath: /kaniko/.docker
-    - name: workspace-volume
-      mountPath: /workspace
+      - name: docker-config
+        mountPath: /kaniko/.docker
+      - name: workspace
+        mountPath: /workspace
   volumes:
-  - name: docker-config
-    emptyDir: {}
-  - name: workspace-volume
-    emptyDir: {}
+    - name: docker-config
+      emptyDir: {}
+    - name: workspace
+      emptyDir: {}
 """
-          // ensure the Kaniko step uses the kaniko container by default and that the pod
-          // does not try to inherit tools/installers from the parent node
           defaultContainer 'kaniko'
           inheritFrom ''
         }
       }
 
       steps {
-        // copy the built artifact (target/*.jar) into the Kaniko context if Dockerfile expects it
-        // Using ${WORKSPACE} so this uses the same workspace folder Jenkins already populated.
         container('kaniko') {
           script {
             withCredentials([usernamePassword(
@@ -80,13 +84,22 @@ spec:
               usernameVariable: 'DOCKER_USER',
               passwordVariable: 'DOCKER_PASS'
             )]) {
-              sh """
-                # prepare docker auth for kaniko
-                mkdir -p /kaniko/.docker
-                echo '{ "auths": { "https://index.docker.io/v1/": { "auth": "${DOCKER_USER}:${DOCKER_PASS}" | base64 -w0 } } }' > /kaniko/.docker/config.json || true
 
-                # Kaniko expects a context directory. We mount workspace to /workspace,
-                # so point context there. Ensure Dockerfile path is correct.
+              sh """
+                echo "🔐 Creating Kaniko Docker credential..."
+                mkdir -p /kaniko/.docker
+
+cat <<EOF > /kaniko/.docker/config.json
+{
+  "auths": {
+    "https://index.docker.io/v1/": {
+      "auth": "$(echo -n "${DOCKER_USER}:${DOCKER_PASS}" | base64)"
+    }
+  }
+}
+EOF
+
+                echo "📦 Running Kaniko build..."
                 /kaniko/executor \
                   --context=/workspace \
                   --dockerfile=/workspace/Dockerfile \
@@ -100,6 +113,9 @@ spec:
       }
     }
 
+    /* ================================
+       KUBERNETES DEPLOYMENT
+       ================================ */
     stage('Deploy to Kubernetes') {
       agent any
       steps {
