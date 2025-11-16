@@ -69,16 +69,18 @@ spec:
                             usernameVariable: 'DOCKER_USER',
                             passwordVariable: 'DOCKER_PASS'
                         )]) {
-                            // This Groovy code will fail the first time, registering the method for approval.
+                            // 1. Prepare the encoded credentials using approved Groovy methods.
                             def authString = "${env.DOCKER_USER}:${env.DOCKER_PASS}".getBytes('UTF-8').encodeBase64().toString()
                             def dockerConfig = '{"auths":{"https://index.docker.io/v1/":{"auth":"' + authString + '"}}}'
 
+                            // 2. Safely write the config file using the Jenkins native 'writeFile' step.
+                            writeFile(
+                                file: '/kaniko/.docker/config.json',
+                                text: dockerConfig
+                            )
+                            
+                            // 3. Execute Kaniko with a simple shell command.
                             sh """
-                                # WARNING: A secret is used via Groovy interpolation (safe here but Jenkins warns)
-                                # Write the pre-encoded Docker config.json directly to Kaniko's expected path
-                                printf '%s' '${dockerConfig}' > /kaniko/.docker/config.json
-                                
-                                # Execute Kaniko
                                 /kaniko/executor \\
                                   --context=/home/jenkins/agent/workspace/spring-petclinic-pipeline \\
                                   --dockerfile=Dockerfile \\
