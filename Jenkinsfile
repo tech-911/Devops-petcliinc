@@ -82,19 +82,7 @@ spec:
                         
                         // 2. AVOID the sh step by using the 'container' step to execute the binary directly.
                         container('kaniko') {
-                            // No 'sh' wrapper! Just the raw command execution here.
-                            // This is the cleanest way to bypass the Durable Task plugin's issues.
-                            
-                            sh """
-                                echo 'Starting Kaniko execution...'
-                                /kaniko/executor \\
-                                  --context=${WORKSPACE} \\
-                                  --dockerfile=${WORKSPACE}/Dockerfile \\
-                                  --destination=${DOCKER_IMAGE} \\
-                                  --destination=${DOCKER_HUB_USER}/${IMAGE_NAME}:latest \\
-                                  --verbosity=info
-                                echo 'Kaniko build complete.'
-                            """
+    
                         }
                     }
                 }
