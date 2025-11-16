@@ -41,17 +41,18 @@ metadata:
 spec:
   serviceAccountName: jenkins
   containers:
-  # CRITICAL FIX: Define JNLP container explicitly to give it the volume mount
+  # 1. Explicitly define JNLP and mount the volume so it can write the config file.
   - name: jnlp 
-    image: jenkins/inbound-agent:3345.v03dee9b_f88fc-1 # Standard JNLP image
+    image: jenkins/inbound-agent:3345.v03dee9b_f88fc-1 
     volumeMounts:
     - name: docker-config
       mountPath: /kaniko/.docker # JNLP can now safely write here!
     - name: workspace-volume 
-      mountPath: /home/jenkins/agent # Default workspace
+      mountPath: /home/jenkins/agent
   
   - name: kaniko
     image: gcr.io/kaniko-project/executor:debug
+    # Ensure the container stays alive using the BusyBox shell.
     command:
     - "/busybox/sh"
     - "-c"
@@ -72,48 +73,45 @@ spec:
                 }
             }
             steps {
-                // This script block runs on the JNLP container (default agent)
+                // This script block runs on the stable JNLP container
                 script {
+                    def dockerConfigPath = "/kaniko/.docker/config.json"
+                    
                     withCredentials([usernamePassword(
                         credentialsId: 'dockerhub-credentials',
                         usernameVariable: 'DOCKER_USER',
                         passwordVariable: 'DOCKER_PASS'
                     )]) {
                         
-                        // This mkdir command will now operate on the mounted emptyDir volume
+                        // Use sh to create the directory on the shared volume
                         sh 'mkdir -p /kaniko/.docker' 
-                        
-                        echo "Creating Docker config in /kaniko/.docker/config.json"
-                        
-                        // Create the config.json file with credentials
-                        sh '''
-                            set -e
-                            
-                            AUTH_STRING=$(echo -n $DOCKER_USER:$DOCKER_PASS | base64)
-                            
-                            cat > /kaniko/.docker/config.json << EOFCONFIG
-{
-  "auths": {
-    "https://index.docker.io/v1/": {
-      "auth": "${AUTH_STRING}"
-    }
-  }
-}
-EOFCONFIG
-                            echo "Config created."
-                        '''
 
-                        // Switch to the 'kaniko' container to run the executor.
+                        // Use Groovy writeFile to create the config.json (cleaner than shell redirection)
+                        echo "Creating Docker config in ${dockerConfigPath}"
+                        def authString = "${env.DOCKER_USER}:${env.DOCKER_PASS}".getBytes('UTF-8').encodeBase64().toString()
+                        def dockerConfigContent = '{"auths":{"https://index.docker.io/v1/":{"auth":"' + authString + '"}}}'
+
+                        writeFile(
+                            file: dockerConfigPath,
+                            text: dockerConfigContent
+                        )
+                        
+                        // Switch to the 'kaniko' container
                         container('kaniko') {
+                            // CRITICAL FIX 3: Explicitly call /busybox/sh to bypass the Durable Task failure.
+                            // We pass the entire Kaniko command as a single script string to the explicit shell.
                             sh """
-                                echo "Starting Kaniko build in kaniko container..."
-                                /kaniko/executor \\
-                                  --context=${WORKSPACE} \\
-                                  --dockerfile=${WORKSPACE}/Dockerfile \\
-                                  --destination=${DOCKER_IMAGE} \\
-                                  --destination=${DOCKER_HUB_USER}/${IMAGE_NAME}:latest \\
-                                  --verbosity=info
-                                echo "Kaniko build complete."
+                                /busybox/sh -c "
+                                    set -e
+                                    echo 'Starting Kaniko build in kaniko container...'
+                                    /kaniko/executor \\
+                                      --context=${WORKSPACE} \\
+                                      --dockerfile=${WORKSPACE}/Dockerfile \\
+                                      --destination=${DOCKER_IMAGE} \\
+                                      --destination=${DOCKER_HUB_USER}/${IMAGE_NAME}:latest \\
+                                      --verbosity=info
+                                    echo 'Kaniko build complete.'
+                                "
                             """
                         }
                     }
