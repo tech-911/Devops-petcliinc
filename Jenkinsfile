@@ -111,17 +111,17 @@ spec:
               agent {
                 kubernetes {
                     yaml """
-        apiVersion: v1
-        kind: Pod
-        spec:
-        serviceAccountName: jenkins
-        containers:
-            - name: kubectl
-            image: bitnami/kubectl:latest
-            command:
-            - cat
-            tty: true
-        """
+                    apiVersion: v1
+                    kind: Pod
+                    spec:
+                    serviceAccountName: jenkins
+                    containers:
+                        - name: kubectl
+                          image: bitnami/kubectl:latest
+                          command:
+                          - cat
+                            tty: true
+                    """
                     defaultContainer 'kubectl'
                 }
             }
