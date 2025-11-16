@@ -43,77 +43,59 @@ spec:
   containers:
   - name: kaniko
     image: gcr.io/kaniko-project/executor:debug
-    # CRITICAL FIX 1: Ensure the container uses a BusyBox shell to stay alive
-    # (Fixes Kaniko exit code 1)
+    # FIX 1: Ensure the container stays alive using a known shell (BusyBox)
     command:
     - "/busybox/sh"
     - "-c"
     - "sleep 9999999"
     volumeMounts:
+    # This volume mount path is shared by all containers in the Pod
     - name: docker-config
       mountPath: /kaniko/.docker
-    # CRITICAL FIX 2: Re-add the necessary workspace volume mount 
-    # so Kaniko can access your source code and the agent can operate.
+    # This mount allows Kaniko to see the source code
     - name: workspace-volume 
       mountPath: /home/jenkins/agent
   volumes:
+    # Define the shared volume for the Docker config
   - name: docker-config
-    emptyDir: {}
-  # The workspace-volume definition is usually added automatically, 
-  # but including it here is safer if you use an 'inheritFrom' template.
-  - name: workspace-volume
     emptyDir: {}
 """
                     inheritFrom ''
                 }
             }
             steps {
-                // The container step is used here, which is causing the durable task issue.
-                // We will try to resolve it by ensuring the shell is available.
-                container('kaniko') {
+                script {
+                    // This entire block runs in the stable JNLP container (the default agent)
                     withCredentials([usernamePassword(
                         credentialsId: 'dockerhub-credentials',
                         usernameVariable: 'DOCKER_USER',
                         passwordVariable: 'DOCKER_PASS'
                     )]) {
-                        // The entire block runs inside the minimal Kaniko container shell.
-                        // We use single quotes (''') for the sh block to prevent groovy interpolation 
-                        // and ensure the shell syntax works cleanly.
-                        sh '''
-                            set -e
-                            
-                            # Log and ensure the correct workspace is used
-                            echo "Workspace is: ${WORKSPACE}"
-                            
-                            echo "Creating Docker config in /kaniko/.docker/config.json"
-                            
-                            # Use mkdir -p to ensure the directory exists before writing the file
-                            mkdir -p /kaniko/.docker
-                            
-                            # Create the config.json file with credentials
-                            echo "Generating base64 auth string..."
-                            AUTH_STRING=$(echo -n $DOCKER_USER:$DOCKER_PASS | base64)
-                            
-                            cat > /kaniko/.docker/config.json << EOFCONFIG
-{
-  "auths": {
-    "https://index.docker.io/v1/": {
-      "auth": "${AUTH_STRING}"
-    }
-  }
-}
-EOFCONFIG
-                            echo "Config created. Starting Kaniko build..."
-                            
-                            /kaniko/executor \\
-                              --context=${WORKSPACE} \\
-                              --dockerfile=${WORKSPACE}/Dockerfile \\
-                              --destination=${DOCKER_HUB_USER}/${IMAGE_NAME}:${IMAGE_TAG} \\
-                              --destination=${DOCKER_HUB_USER}/${IMAGE_NAME}:latest \\
-                              --verbosity=info
-                            
-                            echo "Kaniko build complete."
-                        '''
+                        
+                        // 1. Write the config file directly to the shared volume path.
+                        // The JNLP agent is stable and uses 'writeFile' (Groovy), avoiding the shell issue.
+                        echo "Writing Docker config to shared volume path: /kaniko/.docker/config.json"
+                        def authString = "${env.DOCKER_USER}:${env.DOCKER_PASS}".getBytes('UTF-8').encodeBase64().toString()
+                        def dockerConfigContent = '{"auths":{"https://index.docker.io/v1/":{"auth":"' + authString + '"}}}'
+
+                        sh "mkdir -p /kaniko/.docker" // Ensure the folder exists on the shared volume
+                        writeFile(
+                            file: "/kaniko/.docker/config.json",
+                            text: dockerConfigContent
+                        )
+                        
+                        // 2. Switch to the minimal 'kaniko' container to run the executor.
+                        // We are running the shortest possible command here to minimize the chance of the durable task failing.
+                        container('kaniko') {
+                            sh """
+                                /kaniko/executor \\
+                                  --context=${WORKSPACE} \\
+                                  --dockerfile=${WORKSPACE}/Dockerfile \\
+                                  --destination=${DOCKER_IMAGE} \\
+                                  --destination=${DOCKER_HUB_USER}/${IMAGE_NAME}:latest \\
+                                  --verbosity=info
+                            """
+                        }
                     }
                 }
             }
