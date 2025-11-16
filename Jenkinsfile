@@ -108,14 +108,32 @@ spec:
         }
         
         stage('Deploy to Kubernetes') {
-            agent any
+              agent {
+                kubernetes {
+                    yaml """
+        apiVersion: v1
+        kind: Pod
+        spec:
+        serviceAccountName: jenkins
+        containers:
+            - name: kubectl
+            image: bitnami/kubectl:latest
+            command:
+            - cat
+            tty: true
+        """
+                    defaultContainer 'kubectl'
+                }
+            }
             steps {
-                sh """
+                container('kubectl') {
+                    sh """
                     kubectl apply -f k8s/deployment.yml
                     kubectl apply -f k8s/service.yml
                     kubectl set image deployment/${K8S_DEPLOYMENT_NAME} petclinic=${DOCKER_IMAGE} -n default
                     kubectl rollout status deployment/${K8S_DEPLOYMENT_NAME} -n default --timeout=5m
-                """
+                    """
+                }
             }
         }
     }
