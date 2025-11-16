@@ -39,22 +39,36 @@ metadata:
   labels:
     jenkins: agent
 spec:
+  # IMPORTANT: Add nodeSelector to force scheduling to the PV node
+  nodeSelector:
+    kubernetes.io/hostname: k8s-worker1 
   serviceAccountName: jenkins
   containers:
   - name: kaniko
     image: gcr.io/kaniko-project/executor:debug
+    # FIX: Use /busybox/sh and sleep to keep the container alive for Jenkins
     command:
-    - /busybox/cat
-    tty: true
+    - /busybox/sh
+    - -c
+    - 'sleep 9999999'
     volumeMounts:
     - name: docker-config
       mountPath: /kaniko/.docker
+    # If using local-storage PV, you need to mount it here.
+    # If the workspace-volume is EmptyDir (as it is below), this is okay.
+    # If you were using kaniko-pvc, you'd also need the workspace-volume mount:
+    # - name: workspace-volume
+    #   mountPath: /home/jenkins/agent
   volumes:
   - name: docker-config
     emptyDir: {}
+  # If you were using kaniko-pvc, you'd add it here:
+  # - name: workspace-volume
+  #   persistentVolumeClaim:
+  #     claimName: kaniko-pvc
 """
                     defaultContainer 'kaniko'
-                    inheritFrom ''  // Don't inherit tools from parent
+                    inheritFrom ''
                 }
             }
             steps {
@@ -67,10 +81,10 @@ spec:
                         )]) {
                             sh '''
                                 echo "{\\"auths\\":{\\"https://index.docker.io/v1/\\":{\\"auth\\":\\"$(echo -n $DOCKER_USER:$DOCKER_PASS | base64)\\"}}}" > /kaniko/.docker/config.json
-                                /kaniko/executor \
-                                  --context=/home/jenkins/agent/workspace/spring-petclinic-pipeline \
-                                  --dockerfile=Dockerfile \
-                                  --destination=''' + env.DOCKER_IMAGE + ''' \
+                                /kaniko/executor \\
+                                  --context=/home/jenkins/agent/workspace/spring-petclinic-pipeline \\
+                                  --dockerfile=Dockerfile \\
+                                  --destination=''' + env.DOCKER_IMAGE + ''' \\
                                   --destination=''' + env.DOCKER_HUB_USER + '/' + env.IMAGE_NAME + ''':latest
                             '''
                         }
