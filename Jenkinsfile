@@ -43,8 +43,8 @@ spec:
     args:
     - "--context=/workspace"
     - "--dockerfile=/workspace/Dockerfile"
-    - "--destination=$(DOCKER_HUB_USER)/$(IMAGE_NAME):latest"
-    - "--verbosity=info"
+    - "--destination=\$(DOCKER_HUB_USER)/\$(IMAGE_NAME):latest"
+    - "--verbosity=info" 
     command:
     - "/busybox/sh"
     - "-c"
