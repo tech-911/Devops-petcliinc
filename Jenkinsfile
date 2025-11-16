@@ -43,8 +43,12 @@ spec:
   containers:
   - name: kaniko
     image: gcr.io/kaniko-project/executor:debug
-    # We do NOT need the command/sleep hack anymore. Kaniko is just a tool here.
-    # The default entrypoint is harmless.
+    # CRITICAL FIX: This command keeps the Kaniko sidecar container alive
+    # until the Jenkins agent is ready to run the build command inside it.
+    command:
+    - "/busybox/sh"
+    - "-c"
+    - "sleep 9999999" 
     volumeMounts:
     - name: docker-config
       mountPath: /kaniko/.docker
@@ -54,13 +58,10 @@ spec:
   - name: docker-config
     emptyDir: {}
 """
-                    // *** REMOVED defaultContainer 'kaniko' ***
-                    inheritFrom ''
+                    inheritFrom '' // Ensures JNLP remains the default container for utility tasks
                 }
             }
             steps {
-                // The 'jnlp' container is now the default runner for this stage
-                // Kaniko is available, but the shell command is run by JNLP.
                 script {
                     def dockerConfigPath = "/home/jenkins/agent/workspace/spring-petclinic-pipeline/docker-config.json"
 
