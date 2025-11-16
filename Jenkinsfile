@@ -1,96 +1,94 @@
 pipeline {
-  agent any
-
-  tools {
-    jdk 'JDK-17'
-    maven 'M3'
-  }
-
-  environment {
-    DOCKER_HUB_USER = 'bolatunj'
-    IMAGE_NAME      = "devops-petcliinc"
-    IMAGE_TAG       = "${env.BUILD_NUMBER}"
-    DOCKER_IMAGE    = "${DOCKER_HUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
-  }
-
-  stages {
-
-    stage('Checkout') {
-      steps {
-        git branch: 'main',
-          credentialsId: 'github-credentials',
-          url: 'https://github.com/tech-911/Devops-petcliinc.git'
-      }
+    agent any
+    
+    tools {
+        jdk 'JDK-17'
+        maven 'M3'
     }
-
-    stage('Build & Test') {
-      steps {
-        sh 'mvn -B clean package -DskipTests=false'
-      }
-      post {
-        success { archiveArtifacts artifacts: 'target/*.jar', allowEmptyArchive: true }
-      }
+    
+    environment {
+        DOCKER_HUB_USER = 'bolatunj'
+        IMAGE_NAME = "devops-petcliinc"
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
+        DOCKER_IMAGE = "${DOCKER_HUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
+        K8S_DEPLOYMENT_NAME = "petclinic-deployment"
     }
-
-    stage('Build & Push Image with Kaniko') {
-      agent {
-        kubernetes {
-          yaml """
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main',
+                    credentialsId: 'github-credentials',
+                    url: 'https://github.com/tech-911/Devops-petcliinc.git'
+            }
+        }
+        
+        stage('Build & Test') {
+            steps {
+                sh 'mvn clean package'
+            }
+        }
+        
+        stage('Build & Push with Kaniko') {
+            agent {
+                kubernetes {
+                    yaml """
 apiVersion: v1
 kind: Pod
+metadata:
+  labels:
+    jenkins: agent
 spec:
   serviceAccountName: jenkins
   containers:
   - name: kaniko
-    image: gcr.io/kaniko-project/executor:latest
-    args: ["--skip-unused-stages"]
+    image: gcr.io/kaniko-project/executor:debug
+    command:
+    - /busybox/cat
+    tty: true
     volumeMounts:
-      - name: docker-config
-        mountPath: /kaniko/.docker
-      - name: workspace
-        mountPath: /workspace
-  volumes:
     - name: docker-config
-      secret:
-        secretName: regcred
-        items:
-        - key: .dockerconfigjson
-          path: config.json
-    - name: workspace
-      emptyDir: {}
+      mountPath: /kaniko/.docker
+  volumes:
+  - name: docker-config
+    emptyDir: {}
 """
-          defaultContainer 'kaniko'
+                    defaultContainer 'kaniko'
+                    inheritFrom ''  // Don't inherit tools from parent
+                }
+            }
+            steps {
+                container('kaniko') {
+                    script {
+                        withCredentials([usernamePassword(
+                            credentialsId: 'dockerhub-credentials',
+                            usernameVariable: 'DOCKER_USER',
+                            passwordVariable: 'DOCKER_PASS'
+                        )]) {
+                            sh '''
+                                echo "{\\"auths\\":{\\"https://index.docker.io/v1/\\":{\\"auth\\":\\"$(echo -n $DOCKER_USER:$DOCKER_PASS | base64)\\"}}}" > /kaniko/.docker/config.json
+                                /kaniko/executor \
+                                  --context=/home/jenkins/agent/workspace/spring-petclinic-pipeline \
+                                  --dockerfile=Dockerfile \
+                                  --destination=''' + env.DOCKER_IMAGE + ''' \
+                                  --destination=''' + env.DOCKER_HUB_USER + '/' + env.IMAGE_NAME + ''':latest
+                            '''
+                        }
+                    }
+                }
+            }
         }
-      }
-
-      steps {
-        container('kaniko') {
-          sh """
-            cp -r ${WORKSPACE}/* /workspace/
-
-            /kaniko/executor \
-              --context=/workspace \
-              --dockerfile=/workspace/Dockerfile \
-              --destination=${DOCKER_IMAGE} \
-              --destination=${DOCKER_HUB_USER}/${IMAGE_NAME}:latest
-          """
+        
+        stage('Deploy to Kubernetes') {
+            agent any
+            steps {
+                sh """
+                    kubectl apply -f k8s/deployment.yml
+                    kubectl apply -f k8s/service.yml
+                    kubectl set image deployment/${K8S_DEPLOYMENT_NAME} petclinic=${DOCKER_IMAGE} -n default
+                    kubectl rollout status deployment/${K8S_DEPLOYMENT_NAME} -n default --timeout=5m
+                """
+            }
         }
-      }
     }
-
-    stage('Deploy to Kubernetes') {
-      steps {
-        sh """
-          kubectl apply -f k8s/deployment.yml
-          kubectl apply -f k8s/service.yml
-        """
-      }
-    }
-
-  }
-
-  post {
-    success { echo 'Pipeline finished successfully.' }
-    failure { echo 'Pipeline failed!' }
-  }
 }
