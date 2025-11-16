@@ -15,7 +15,19 @@ pipeline {
     }
     
     stages {
-        // ... Checkout and Build & Test stages omitted for brevity (they are working) ...
+        stage('Checkout') {
+            steps {
+                git branch: 'main',
+                    credentialsId: 'github-credentials',
+                    url: 'https://github.com/tech-911/Devops-petcliinc.git'
+            }
+        }
+        
+        stage('Build & Test') {
+            steps {
+                sh 'mvn clean package'
+            }
+        }
         
         stage('Build & Push with Kaniko') {
             agent {
@@ -29,22 +41,18 @@ metadata:
 spec:
   serviceAccountName: jenkins
   containers:
-  # JNLP and Kaniko definitions are correct for volume sharing
+  # 1. Explicitly define JNLP and mount the volume so it can write the config file.
   - name: jnlp 
     image: jenkins/inbound-agent:3345.v03dee9b_f88fc-1 
     volumeMounts:
     - name: docker-config
-      mountPath: /kaniko/.docker
+      mountPath: /kaniko/.docker # JNLP can now safely write here!
     - name: workspace-volume 
       mountPath: /home/jenkins/agent
   
   - name: kaniko
     image: gcr.io/kaniko-project/executor:debug
-    args:
-    - "--context=/workspace"
-    - "--dockerfile=/workspace/Dockerfile"
-    - "--destination=\$(DOCKER_HUB_USER)/\$(IMAGE_NAME):latest"
-    - "--verbosity=info" 
+    # Ensure the container stays alive using the BusyBox shell.
     command:
     - "/busybox/sh"
     - "-c"
@@ -65,6 +73,7 @@ spec:
                 }
             }
             steps {
+                // This script block runs on the stable JNLP container
                 script {
                     def dockerConfigPath = "/kaniko/.docker/config.json"
                     
@@ -74,8 +83,10 @@ spec:
                         passwordVariable: 'DOCKER_PASS'
                     )]) {
                         
-                        // 1. Write the Docker config file using the stable JNLP agent (default container)
+                        // Use sh to create the directory on the shared volume
                         sh 'mkdir -p /kaniko/.docker' 
+
+                        // Use Groovy writeFile to create the config.json (cleaner than shell redirection)
                         echo "Creating Docker config in ${dockerConfigPath}"
                         def authString = "${env.DOCKER_USER}:${env.DOCKER_PASS}".getBytes('UTF-8').encodeBase64().toString()
                         def dockerConfigContent = '{"auths":{"https://index.docker.io/v1/":{"auth":"' + authString + '"}}}'
@@ -85,9 +96,23 @@ spec:
                             text: dockerConfigContent
                         )
                         
-                        // 2. AVOID the sh step by using the 'container' step to execute the binary directly.
+                        // Switch to the 'kaniko' container
                         container('kaniko') {
-    
+                            // CRITICAL FIX 3: Explicitly call /busybox/sh to bypass the Durable Task failure.
+                            // We pass the entire Kaniko command as a single script string to the explicit shell.
+                            sh """
+                                /busybox/sh -c "
+                                    set -e
+                                    echo 'Starting Kaniko build in kaniko container...'
+                                    /kaniko/executor \\
+                                      --context=${WORKSPACE} \\
+                                      --dockerfile=${WORKSPACE}/Dockerfile \\
+                                      --destination=${DOCKER_IMAGE} \\
+                                      --destination=${DOCKER_HUB_USER}/${IMAGE_NAME}:latest \\
+                                      --verbosity=info
+                                    echo 'Kaniko build complete.'
+                                "
+                            """
                         }
                     }
                 }
@@ -98,9 +123,8 @@ spec:
             agent any
             steps {
                 sh """
-                    kubectl apply -f k8s/db.yml -v=6
-                    kubectl apply -f k8s/ns-prod.yaml -v=6
-                    kubectl apply -f k8s/petclinic.yml -v=6
+                    kubectl apply -f k8s/deployment.yml
+                    kubectl apply -f k8s/service.yml
                     kubectl set image deployment/${K8S_DEPLOYMENT_NAME} petclinic=${DOCKER_IMAGE} -n default
                     kubectl rollout status deployment/${K8S_DEPLOYMENT_NAME} -n default --timeout=5m
                 """
